@@ -42,8 +42,6 @@ from __future__ import unicode_literals
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.modules.utils import _pair, _quadruple
-
 import math
 
 
@@ -108,7 +106,7 @@ class AttentionWeights(nn.Module):
         num_channels *= sum(levels)
         self.k = k
         #self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.avgpool = SPPLayer(num_levels, pool_type='rsd_pool')
+        self.avgpool = SPPLayer(num_levels, pool_type='avg_pool')
         layers = []
         if attention_mode == 0:
             layers = [ nn.Conv2d(num_channels, k, 1),
@@ -238,13 +236,8 @@ class MixtureGroupNorm(nn.Module):
 
 
 class SPPLayer(torch.nn.Module):
-    """ Spatial Pyramid Pooling Module
-    
-    Args:
-         num_levels: number of pyramid levels, number of pools per level = level**2
-         pool_type: type of pooling (max_pool, avg_pool, rsd_pool)
-    """
-    def __init__(self, num_levels, pool_type='rsd_pool'):
+
+    def __init__(self, num_levels, pool_type='avg_pool'):
         super(SPPLayer, self).__init__()
 
         self.num_levels = num_levels
@@ -261,87 +254,38 @@ class SPPLayer(torch.nn.Module):
             # level <<= 1
             level = i + 1
 
-            kernel_size = (math.ceil(h / level), math.ceil(w / level))  # kernel_size = (h, w)
-            padding = (math.floor((kernel_size[0] * level - h + 1) / 2), 
-                       math.floor((kernel_size[1] * level - w + 1) / 2))
+            # kernel_size = (math.ceil(h / level), math.ceil(w / level))  # kernel_size = (h, w)
+            # padding = (
+            #     math.floor((kernel_size[0] * level - h + 1) / 2), math.floor((kernel_size[1] * level - w + 1) / 2))
 
-            
-            # If a 4-tuple, uses (paddingLeft, paddingRight, paddingTop, paddingBottom)
-            zero_pad = torch.nn.ZeroPad2d((padding[1], padding[1], padding[0], padding[0]))
-            x_new = zero_pad(x)
+            # # update input data with padding
+            # #  class torch.nn.ZeroPad2d(padding)[source]
+            # #
+            # #     Pads the input tensor boundaries with zero.
+            # #
+            # #     For N`d-padding, use :func:`torch.nn.functional.pad().
+            # #     Parameters:	padding (int, tuple) – the size of the padding. If is int, uses the same padding in all boundaries.
+            # # If a 4-tuple, uses (paddingLeft, paddingRight, paddingTop, paddingBottom)
+            # zero_pad = torch.nn.ZeroPad2d((padding[1], padding[1], padding[0], padding[0]))
+            # x_new = zero_pad(x)
 
-            # update kernel and stride
-            h_new, w_new = x_new.size()[2:]
+            # # update kernel and stride
+            # h_new, w_new = x_new.size()[2:]
 
-            kernel_size = (math.ceil(h_new / level), math.ceil(w_new / level))
-            stride = (math.floor(h_new / level), math.floor(w_new / level))
+            # kernel_size = (math.ceil(h_new / level), math.ceil(w_new / level))
+            # stride = (math.floor(h_new / level), math.floor(w_new / level))
 
             if self.pool_type == 'max_pool':
-                y = F.max_pool2d(x_new, kernel_size=kernel_size, stride=stride).view(num, -1)
-                # pool_op = nn.AdaptiveMaxPool2d(level)
+                # tensor = F.max_pool2d(x_new, kernel_size=kernel_size, stride=stride).view(num, -1)
+                poolOp = nn.AdaptiveMaxPool2d(level)
             elif self.pool_type == 'avg_pool':
-                y = F.avg_pool2d(x_new, kernel_size=kernel_size, stride=stride).view(num, -1)
-                # pool_op = nn.AdaptiveAvgPool2d(level)
-            elif self.pool_type == 'rsd_pool':
-                y = F.avg_pool2d(x_new, kernel_size=kernel_size, stride=stride).view(num, -1)
-                # std_pool = StdDevPool2d(kernel_size=kernel_size, stride=stride)
-                y_var = var_pool2D(x_new, kernel_size, stride).view(num, -1)               
-                y *= (y_var + 1e-3).rsqrt()
-
-            # tensor = pool_op(x)
+                # tensor = F.avg_pool2d(x_new, kernel_size=kernel_size, stride=stride).view(num, -1)
+                poolOp = nn.AdaptiveAvgPool2d(level)
+            tensor = poolOp(x)
             if (i == 0):
-                y_pooled = y.view(num, -1)
+                x_flatten = tensor.view(num, -1)
             else:
-                y_pooled = torch.cat((y_pooled, y.view(num, -1)), 1)
-        return y_pooled
+                x_flatten = torch.cat((x_flatten, tensor.view(num, -1)), 1)
+        return x_flatten
 
 
-def var_pool2D(x, kernel_size, stride):
-    k = _pair(kernel_size)
-    stride = _pair(stride)
-    x = x.unfold(2, k[0], stride[0]).unfold(3, k[1], stride[1])
-    x = x.contiguous().view(*x.size()[:-2], -1).var(dim=-1)
-    return x   
-
-
-# class StdDevPool2d(nn.Module):
-#     """ Standard Deviation pool (usable as std filter when stride=1) module.
-    
-#     Args:
-#          kernel_size: size of pooling kernel, int or 2-tuple
-#          stride: pool stride, int or 2-tuple
-#          padding: pool padding, int or 4-tuple (l, r, t, b) as in pytorch F.pad
-#          same: override padding and enforce same padding, boolean
-#     """
-#     def __init__(self, kernel_size=3, stride=1, padding=0, same=False):
-#         super(StdDevPool2d, self).__init__()
-#         self.k = _pair(kernel_size)
-#         self.stride = _pair(stride)
-#         self.padding = _quadruple(padding)  # convert to l, r, t, b
-#         self.same = same
-
-#     def _padding(self, x):
-#         if self.same:
-#             ih, iw = x.size()[2:]
-#             if ih % self.stride[0] == 0:
-#                 ph = max(self.k[0] - self.stride[0], 0)
-#             else:
-#                 ph = max(self.k[0] - (ih % self.stride[0]), 0)
-#             if iw % self.stride[1] == 0:
-#                 pw = max(self.k[1] - self.stride[1], 0)
-#             else:
-#                 pw = max(self.k[1] - (iw % self.stride[1]), 0)
-#             pl = pw // 2
-#             pr = pw - pl
-#             pt = ph // 2
-#             pb = ph - pt
-#             padding = (pl, pr, pt, pb)
-#         else:
-#             padding = self.padding
-#         return padding
-    
-#     def forward(self, x):
-#         # x = F.pad(x, self._padding(x), mode='reflect')
-#         x = x.unfold(2, self.k[0], self.stride[0]).unfold(3, self.k[1], self.stride[1])
-#         x = x.contiguous().view(*x.size()[:-2], -1).std(dim=-1)
-#         return x

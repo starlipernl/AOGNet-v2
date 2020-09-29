@@ -12,14 +12,14 @@ fi
 CONFIG_FILE=$DIR/../$1
 
 ### Change accordingly
-GPUS=0,1,2,3,4,5,6,7
-NUM_GPUS=8
+GPUS=0,1,2,3
+NUM_GPUS=4
 NUM_WORKERS=8
 MASTER_PORT=1234
 
 CONFIG_FILENAME="$(cut -d'/' -f2 <<<$1)"
 CONFIG_BASE="${CONFIG_FILENAME%.*}"
-SAVE_DIR=$DIR/../results/$CONFIG_BASE
+SAVE_DIR=$DIR/../results_rsd_pool/$CONFIG_BASE
 mkdir -p $SAVE_DIR
 
 # backup for reproducing results
